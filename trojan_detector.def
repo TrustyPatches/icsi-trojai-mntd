@@ -1,0 +1,24 @@
+Bootstrap: docker
+From: pytorch/pytorch:1.7.0-cuda11.0-cudnn8-runtime
+
+
+%setup
+    mkdir -p ${SINGULARITY_ROOTFS}/mntdmod
+    mkdir -p ${SINGULARITY_ROOTFS}/metamodels
+
+%files
+    ./trojan_detector.py /
+    ./model_factories.py /
+
+    ./mntdmod/__init__.py /mntdmod
+    ./mntdmod/utils_meta.py /mntdmod
+    ./mntdmod/meta_classifier.py /mntdmod
+    ./mntdmod/audio_preprocess.py /mntdmod
+    ./metamodels/meta-model.pt /metamodels
+
+%post
+    /opt/conda/bin/conda install pip
+    /opt/conda/bin/python3 -m pip install trojai transformers datasets seqeval
+
+%runscript
+    exec python3 /trojan_detector.py "$@"

@@ -141,6 +141,9 @@ def main():
         print("\tTest AUC:", test_info[1])
         AUCs.append(test_info[1])
 
+        if test_info[1] > 0.66:
+            torch.save(meta_model, 'metamodels/meta-model.pt')
+
     # Average and report performance metrics
 
     training_AUC_mean = sum(training_AUCs) / len(AUCs)

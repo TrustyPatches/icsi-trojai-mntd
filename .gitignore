@@ -45,3 +45,7 @@ ipython_config.py
 
 # Project related
 scratch/*
+*.simg
+test-models/*
+output.txt
+metamodels/*.pt
