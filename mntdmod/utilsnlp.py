@@ -1,16 +1,79 @@
+# -*- coding: utf-8 -*-
+
+"""
+utilsnlp.py
+~~~~~~~~~~~
+
+Helper functions for interacting with Round 7 NIST TrojAI models.
+These functions are largely lifted from `trojai-example` and are intended
+for use in notebooks or for submitted containers.
+
+See: https://github.com/usnistgov/trojai-example
+
+"""
+
 import os
 
 import torch
 import transformers
 
-import utils as utils
-from settings import config
+from mntdmod import utils
+from mntdmod.settings import config
 from trojaiexample.example_trojan_detector import tokenize_and_align_labels
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def load_model_data(model_id):
+    """Helper function to grab everything about a model."""
+    model = utils.load_model(model_id)
+    config = utils.load_model_config(model_id)
+    clean_fns = load_input_data(model_id, True, poisoned=False)
+    try:
+        poisoned_fns = load_input_data(model_id, True, poisoned=True)
+    except FileNotFoundError:  # Model is clean
+        poisoned_fns = []
+    tokenizer, max_input_length = load_tokenizer(
+        config["embedding"], config["embedding_flavor"]
+    )
+    return model, config, clean_fns, poisoned_fns, tokenizer, max_input_length
+
+
+def load_input_data(
+    i, raw=False, poisoned=False, r=config["round"], split=config["split"]
+):
+    """Fetch filenames storing example inputs for a given model."""
+    prefix = "poisoned" if poisoned else "clean"
+    is_tokenized = lambda x: x.endswith("_tokenized.txt")
+
+    examples_dir = utils.resolve_model_dir(i, r, split)
+    examples_dir = os.path.join(examples_dir, f"{prefix}_example_data")
+    fns = [
+        os.path.join(examples_dir, fn)
+        for fn in os.listdir(examples_dir)
+        if raw ^ is_tokenized(fn)
+    ]
+    return sorted(fns)
+
+
+def load_input_file(input_file):
+    """Load example input data."""
+    original_words = []
+    original_labels = []
+    with open(input_file, "r") as fh:
+        lines = fh.readlines()
+        for line in lines:
+            split_line = line.split("\t")
+            word = split_line[0].strip()
+            label = split_line[2].strip()
+
+            original_words.append(word)
+            original_labels.append(int(label))
+    return original_words, original_labels
+
+
 def load_tokenizer(embedding, flavor, evaluation=False, args=None):
+    """Load a tokenizer for a particular embedding type."""
     # Related to TrojAI evaluation server
     if evaluation:
         tokenizer = torch.load(args.tokenizer_filepath)
@@ -36,38 +99,8 @@ def load_tokenizer(embedding, flavor, evaluation=False, args=None):
     return tokenizer, max_input_length
 
 
-def load_input_data(
-    i, raw=False, poisoned=False, r=config["round"], split=config["split"]
-):
-    prefix = "poisoned" if poisoned else "clean"
-    is_tokenized = lambda x: x.endswith("_tokenized.txt")
-
-    examples_dir = utils.resolve_model_dir(i, r, split)
-    examples_dir = os.path.join(examples_dir, f"{prefix}_example_data")
-    fns = [
-        os.path.join(examples_dir, fn)
-        for fn in os.listdir(examples_dir)
-        if raw ^ is_tokenized(fn)
-    ]
-    return sorted(fns)
-
-
-def load_input_file(input_file):
-    original_words = []
-    original_labels = []
-    with open(input_file, "r") as fh:
-        lines = fh.readlines()
-        for line in lines:
-            split_line = line.split("\t")
-            word = split_line[0].strip()
-            label = split_line[2].strip()
-
-            original_words.append(word)
-            original_labels.append(int(label))
-    return original_words, original_labels
-
-
 def tokenize_input(tokenizer, original_words, original_labels, max_input_length):
+    """Tokenize input for the model to process it."""
     input_ids, attention_mask, labels, labels_mask = tokenize_and_align_labels(
         tokenizer, original_words, original_labels, max_input_length
     )
@@ -85,6 +118,7 @@ def tokenize_input(tokenizer, original_words, original_labels, max_input_length)
 
 
 def predict(model, input_ids, attention_mask, labels_tensor, use_amp=False):
+    """Apply the given model to the given inputs to produce a prediction."""
     if use_amp:
         with torch.cuda.amp.autocast():
             # Classification model returns loss, logits, can ignore loss if needed
@@ -103,6 +137,7 @@ def predict(model, input_ids, attention_mask, labels_tensor, use_amp=False):
 
 
 def accuracy(preds, labels, labels_mask):
+    """Compute Accuracy metric."""
     n_correct = 0
     n_total = 0
     predicted_labels = []
@@ -113,17 +148,3 @@ def accuracy(preds, labels, labels_mask):
             n_correct += preds[i] == labels[i]
 
     return n_correct / n_total, n_correct, n_total
-
-
-def load_model_data(model_id):
-    model = utils.load_model(model_id)
-    config = utils.load_model_config(model_id)
-    clean_fns = load_input_data(model_id, True, poisoned=False)
-    try:
-        poisoned_fns = load_input_data(model_id, True, poisoned=True)
-    except FileNotFoundError:  # Model is clean
-        poisoned_fns = []
-    tokenizer, max_input_length = load_tokenizer(
-        config["embedding"], config["embedding_flavor"]
-    )
-    return model, config, clean_fns, poisoned_fns, tokenizer, max_input_length

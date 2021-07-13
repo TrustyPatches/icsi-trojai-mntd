@@ -1,74 +1,40 @@
 import argparse
+from typing import Union
 
 import numpy as np
 import torch
 import torch.utils.data
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-import utils
+from mntdmod import tasks, utils
 from mntdmod.meta_classifier import MetaClassifier
 
-N_REPEAT, N_EPOCH = 10, 10
-SOURCE_DATASET = "conll2003"
-
-# TRAIN, VAL, TEST = 0.7, 0.1, 0.2
-VAL_RATE = 0.2307  # Hacks for getting reasonably sized
-TEST_RATE = 0.1875  # sets given the small sample size
-
-GPU = False  # MNTD code doesn't automatically detect GPU presence :(
+TEST_RATE = 0.2
+GPU = torch.cuda.is_available()
 
 
 def main():
     args = parse_args()
 
     if args.no_qt:
-        save_path = f"./scratch/{SOURCE_DATASET}_no-qt.model"
+        save_path = f"./scratch/{args.dataset_config}_no-qt.model"
     else:
-        save_path = f"./scratch/{SOURCE_DATASET}.model"
+        save_path = f"./scratch/{args.dataset_config}.model"
 
     # --------------------------------------------------
     # Define characteristics of target/shadow models
     # --------------------------------------------------
 
-    # Model, input_size, class_num, inp_mean, inp_std, is_discrete = load_model_setting(args.task)
-    # input_size = (768,)
-    input_size = (59, 768)
-    class_num = 9
-    is_discrete = True
-
-    # Exclude sets of models based on different architecture or other compatibility issues
-    mobilebert = utils.select_models([("embedding", "MobileBERT")])
-    distilbert = utils.select_models([("embedding", "DistilBERT")])
-    excluded = distilbert + mobilebert
-
-    clean_models, poisoned_models = utils.get_clean_and_poisoned(
-        [("source_dataset", SOURCE_DATASET)], exclusion_list=excluded
-    )
-
-    # -------------------------
-    # Create datasets/split
-    # -------------------------
-
-    X = clean_models + poisoned_models
-    y = [0] * len(clean_models) + [1] * len(poisoned_models)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, stratify=y, test_size=TEST_RATE
-    )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, stratify=y_train, test_size=VAL_RATE
-    )
+    _, input_size, class_num, _, _, is_discrete = tasks.load_model_setting(args.task)
+    X_train, X_val, y_train, y_val = tasks.load_dataset_configuration(args.dataset_config, TEST_RATE, args)
 
     train_dataset = list(zip(X_train, y_train))
     val_dataset = list(zip(X_val, y_val))
-    test_dataset = list(zip(X_test, y_test))
 
     print(
         f"Training examples: {len(train_dataset)}\n"
         f"Validation examples: {len(val_dataset)}\n"
-        f"Test examples: {len(test_dataset)}"
     )
 
     # --------------------------------------------------
@@ -77,10 +43,9 @@ def main():
     # --------------------------------------------------
 
     AUCs = []
-    training_AUCs = []
 
     # Result contains randomness, so run several times and take the average
-    for i in range(N_REPEAT):
+    for i in range(args.nrepeats):
 
         # Create metaclassifier and optimizer
 
@@ -89,78 +54,86 @@ def main():
         )
 
         if args.load_exist:
-            print("Evaluating Meta Classifier %d/%d" % (i + 1, N_REPEAT))
-            meta_model.load_state_dict(torch.load(save_path + "_%d" % i))
-            test_info = epoch_meta(
-                meta_model, test_dataset, is_discrete=is_discrete, threshold="half"
+            print(f"Evaluating Meta Classifier {i + 1}/{args.nrepeats}")
+            meta_model.load_state_dict(torch.load(f"{save_path}_{i}"))
+            _, eval_auc, _ = epoch_meta(
+                meta_model, val_dataset, args.task, threshold="half"
             )
-            print("\tTest AUC:", test_info[1])
-            AUCs.append(test_info[1])
+            print(f"\tVal AUC: {eval_auc}")
+            AUCs.append(eval_auc)
             continue
 
-        print("Training Meta Classifier %d/%d" % (i + 1, N_REPEAT))
+        if 'single' in args.task:
+            print("Freezing metaclassifier parameters")
+            for parameter in meta_model.fc.parameters():
+                parameter.requires_grad = False
+
+            for parameter in meta_model.output.parameters():
+                parameter.requires_grad = False
+
+        print(f"Training Meta Classifier {i + 1}/{args.nrepeats}")
         if args.no_qt:
             print("No query tuning.")
             optimizer = torch.optim.Adam(
                 list(meta_model.fc.parameters())
                 + list(meta_model.output.parameters()),
-                lr=1e-3,
+                lr=args.learning_rate,
             )
         else:
-            optimizer = torch.optim.Adam(meta_model.parameters(), lr=1e-3)
+            print("Using query tuning.")
+            optimizer = torch.optim.Adam(meta_model.parameters(), lr=args.learning_rate)
 
         # Train metaclassifier for N_EPOCH epochs
-
         best_eval_auc = None
-        test_info = None
-        for epoch in tqdm(range(N_EPOCH)):
+
+        for epoch in tqdm(range(args.nepochs)):
             epoch_meta(
                 meta_model,
                 train_dataset,
-                is_discrete=is_discrete,
+                args.task,
                 threshold="half",
                 optimizer=optimizer,
             )
             eval_loss, eval_auc, eval_acc = epoch_meta(
-                meta_model, val_dataset, is_discrete=is_discrete, threshold="half"
+                meta_model, val_dataset, args.task, threshold="half"
             )
 
-            if epoch == N_EPOCH - 1:
-                training_AUCs.append(eval_auc)
-                print("Training AUC:", eval_auc)
             if best_eval_auc is None or eval_auc > best_eval_auc:
                 best_eval_auc = eval_auc
-                test_info = epoch_meta(
-                    meta_model,
-                    test_dataset,
-                    is_discrete=is_discrete,
-                    threshold="half",
-                )
-                torch.save(meta_model.state_dict(), save_path + "_%d" % i)
+                # torch.save(meta_model.state_dict(), f"{save_path}_{i}")
 
-        print("\tTest AUC:", test_info[1])
-        AUCs.append(test_info[1])
+            print(f"\tValidation AUC after epoch {epoch + 1}: {eval_auc}", )
 
-        if test_info[1] > 0.66:
-            torch.save(meta_model, 'metamodels/meta-model.pt')
+        AUCs.append(best_eval_auc)
+        print(AUCs)
 
-    # Average and report performance metrics
-
-    training_AUC_mean = sum(training_AUCs) / len(AUCs)
-    AUC_mean = sum(AUCs) / len(AUCs)
-    print(
-        "Average training AUC on %d meta classifier: %.4f"
-        % (N_REPEAT, training_AUC_mean)
-    )
-    print("Average detection AUC on %d meta classifier: %.4f" % (N_REPEAT, AUC_mean))
+    # Average and report best validation performances
+    print(f"Average training AUC on {args.nrepeats} meta classifier: {np.mean(AUCs):.4f}")
 
 
-def epoch_meta(meta_model, dataset, is_discrete, threshold=0.0, optimizer=None):
+def epoch_meta(meta_model, dataset, task, threshold: Union[str, float] = 0.0, optimizer=None, debug=False):
+    """Iterate over training or validation dataset.
+
+    This is mostly unchanged from the original MNTD example.
+    (areas w/ comments typically signal adaptation from the original).
+
+    Args:
+        meta_model: The meta-classifier to use in the optimization/validation.
+        dataset: The dataset to train/validate with.
+        task: The task for the experiment (e.g., 'r7-conll2003')
+        threshold: Operating point for the meta-classifier decisions (i.e., threshold on AUC curve).
+        optimizer: If present will use to optimize as a training epoch, otherwise validation only.
+        debug: Prints more detailed loss information.
+
+    Returns:
+        tuple: (average loss, AUC, accuracy)
+
+    """
     # ------------------------------------------------------------------
     # Metaclassifier epoch — mostly unchanged from MNTD example
     # (areas w/ comments typically signal adaptation from the original)
     # -------------------------------------------------------------------
-    if optimizer:
+    if optimizer is not None:
         meta_model.train()
         perm = np.random.permutation(len(dataset))
     else:
@@ -168,23 +141,19 @@ def epoch_meta(meta_model, dataset, is_discrete, threshold=0.0, optimizer=None):
         perm = list(range(len(dataset)))
 
     cum_loss = 0.0
-    preds = []
-    labs = []
-    for i in perm:
-        x, y = dataset[i]
-        # basic_model.load_state_dict(torch.load(x))
-        basic_model = utils.load_model(x)
+    preds, labels = [], []
 
-        # print(basic_model.transformer.config.model_type)
+    for i in perm:
+
+        x, y = dataset[i]
+        r = task[1]  # ASSUMPTION: All tasks begin rX (e.g., r5, r6, r7)
+        basic_model = utils.load_model(x, r=r)
+
         basic_model.train()  # why train() not eval(), is it to track gradients during qt? (what about dropout, etc?)
 
-        if is_discrete:
-            # out = basic_model.emb_forward(meta_model.inp)
-            # out = basic_model.classifier(meta_model.inp)
-            # head_mask = [None] * basic_model.transformer.config.num_hidden_layers
-
+        if task in ('r7-conll2003',):
             head_mask = torch.tensor(
-                [0] * basic_model.transformer.config.num_hidden_layers
+                [1] * basic_model.transformer.config.num_hidden_layers
             )
 
             # Account for difference in distilbert layer naming
@@ -193,48 +162,59 @@ def epoch_meta(meta_model, dataset, is_discrete, threshold=0.0, optimizer=None):
             else:
                 encoder_layer = basic_model.transformer.encoder
 
-            # print(meta_model.inp.shape, head_mask.shape)
-
             # Forward pass through BERT encoder stack and NER classification layer
             out = basic_model.classifier(
                 basic_model.dropout(
                     encoder_layer(meta_model.inp, head_mask=head_mask).last_hidden_state
                 )
             )
-
-            # out = basic_model.transformer.transformer(meta_model.inp)
+        elif task in ('r5', 'r6'):
+            out = basic_model.forward(meta_model.inp)
+        elif task in ('rtNLP',):
+            out = basic_model.emb_forward(meta_model.inp)
         else:
             out = basic_model.forward(meta_model.inp)
 
         score = meta_model.forward(out)
-
-        l = meta_model.loss(score, y)
+        loss = meta_model.loss(score, y)
 
         if optimizer:
             optimizer.zero_grad()
-            l.backward()
+            loss.backward()
             optimizer.step()
 
-        cum_loss = cum_loss + l.item()
+        cum_loss += loss.item()
         preds.append(score.item())
-        labs.append(y)
+        labels.append(y)
 
-    preds = np.array(preds)
-    labs = np.array(labs)
-    auc = roc_auc_score(labs, preds)
+        if debug:
+            print('Loss: {loss}  Score: {score.item()}  GT: {y}')
+
+    preds, labels = np.array(preds), np.array(labels)
+    auc = roc_auc_score(labels, preds)
+
     if threshold == "half":
         threshold = np.median(preds).item()
-    acc = ((preds > threshold) == labs).mean()
+    acc = ((preds > threshold) == labels).mean()
 
-    if optimizer:
-        return cum_loss / len(dataset), auc, acc
-    else:
-        return cum_loss / len(preds), auc, acc
+    target_set = dataset if optimizer else preds
+    return cum_loss / len(target_set), auc, acc
 
 
 def parse_args():
-    # Leftover from original MNTD code, not really used them to date
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--task',
+        type=str,
+        required=True,
+        help='Specify the task (mnist/cifar10/audio/rtNLP/r5/r6/r7-conll2003).'
+    )
+    parser.add_argument(
+        '--dataset_config',
+        type=str,
+        required=True,
+        help='Specify the dataset configuration (e.g., mnist/cifar10/audio/rtNLP/r7-conll).'
+    )
     parser.add_argument(
         "--no_qt",
         action="store_true",
@@ -245,6 +225,31 @@ def parse_args():
         action="store_true",
         help="If set, load the previously trained meta-classifier and skip training process.",
     )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=1e-3,
+        help="Learning rate to use for meta-classifier.",
+    )
+    parser.add_argument(
+        "--single_model",
+        type=int,
+        default=0,
+        help="Index into clean test models to use in single (change to model id for future experiments).",
+    )
+    parser.add_argument(
+        "--nrepeats",
+        type=int,
+        default=5,
+        help="Repeat experiment N times and average the results.",
+    )
+    parser.add_argument(
+        "--nepochs",
+        type=int,
+        default=10,
+        help="Train the meta-classifier over N epochs.",
+    )
+
     return parser.parse_args()
 
 

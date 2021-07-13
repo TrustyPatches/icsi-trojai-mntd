@@ -1,3 +1,5 @@
+cd ..
+
 singularity run --nv ./$1.simg \
   --model_filepath ./test-models/id-00000000/model.pt \
   --result_filepath ./output.txt \
