@@ -11,9 +11,14 @@ From: pytorch/pytorch:1.7.0-cuda11.0-cudnn8-runtime
     ./model_factories.py /
 
     ./mntdmod/__init__.py /mntdmod
-    ./mntdmod/utils_meta.py /mntdmod
-    ./mntdmod/meta_classifier.py /mntdmod
     ./mntdmod/audio_preprocess.py /mntdmod
+    ./mntdmod/bertner.py /mntdmod
+    ./mntdmod/meta_classifier.py /mntdmod
+    ./mntdmod/poisoning.py /mntdmod
+    ./mntdmod/settings.py /mntdmod
+    ./mntdmod/tasks.py /mntdmod
+    ./mntdmod/utils.py /mntdmod
+    ./mntdmod/utilsnlp.py /mntdmod
     ./metamodels/meta-model.pt /metamodels
 
 %post

@@ -22,7 +22,7 @@ def main():
         return
 
     # meta_model = torch.load(os.path.join('metamodels', 'meta-model.pt'))
-    meta_model = torch.load(os.path.join(os.sep, 'metamodels', 'meta-model.pt'))
+    meta_model = torch.load('' + os.path.join(os.sep, 'metamodels', 'meta-model.pt'), map_location=device)
     meta_model.eval()
 
     trojan_probability = predict_proba(meta_model, target_model).item()
