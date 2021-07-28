@@ -161,9 +161,9 @@ def resolve_labels(target_label, dataset='conll2003'):
     # Resolve (class label idx, B- label idx, I- label idx)
     if dataset == 'conll2003':
         return {
-            'PER': (0, 1, 2),
-            'ORG': (1, 3, 4),
-            'LOC': (2, 6, 7),
+            'PER':  (0, 1, 2),
+            'ORG':  (1, 3, 4),
+            'LOC':  (2, 5, 6),
             'MISC': (3, 7, 8),
         }[target_label]
     else:
