@@ -161,10 +161,10 @@ def resolve_labels(target_label, dataset='conll2003'):
     # Resolve (class label idx, B- label idx, I- label idx)
     if dataset == 'conll2003':
         return {
-            'PER':  (0, 1, 2),
-            'ORG':  (1, 3, 4),
-            'LOC':  (2, 5, 6),
-            'MISC': (3, 7, 8),
+            'MISC': (0, 1, 2),
+            'PER':  (1, 3, 4),
+            'ORG':  (2, 5, 6),
+            'LOC':  (3, 7, 8),
         }[target_label]
     else:
         raise NotImplementedError
